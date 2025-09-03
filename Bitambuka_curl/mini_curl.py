@@ -23,23 +23,32 @@ def parse_url(url):
         raise ValueError("missing hostname")
     scheme = u.scheme
     host = u.hostname
-    port = u.port or (423 if scheme == "https" else 80)
+    port = u.port or (443 if scheme == "https" else 80)
     path = (u.path or "/") + (("?" + u.query) if u.query else "")
 
     return scheme, host, port, path
     
 scheme, host, port, path = parse_url(url=url)
 
-print(f" the scheme is {scheme} and the host is {host} on port {port} the path is {path}")
-
-def establish_connection(scheme, host, port, path):
-    host_ip = socket.gethostbyname(f"{host}")
+# establish connection
+sock = None
+for af, socktype, proto, can_name, sa in socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM):
     try:
-        new_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        return new_socket, host_ip
-    except:
-        raise ValueError (" could not create socket for the given user")
-    
-url_socket, host_ip = establish_connection(scheme, host, port, path)
+        s = socket.socket(af, socktype, proto)
+        s.settimeout(10)
+        if scheme == "https":
+            ctx = ssl.create_default_context()
+            s = ctx.wrap_socket(s, server_hostname=host)
+        s.connect(sa)
+        sock = s
+        break
+        
+    except Exception as e:
+        last_err = ValueError(e)
+        print(last_err)
+        continue
 
-print(f"the connection between my machine and  the host {host_ip} and is to be establish on the socket {url_socket}")
+if not sock:
+    raise last_err or OSError("fail to connect to socket")
+
+print("connected to", sock.getpeername())
