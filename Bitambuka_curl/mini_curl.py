@@ -51,4 +51,48 @@ for af, socktype, proto, can_name, sa in socket.getaddrinfo(host, port, socket.A
 if not sock:
     raise last_err or OSError("fail to connect to socket")
 
-print("connected to", sock.getpeername())
+
+def build_request(method, host, port, path):
+
+    host_hdr = f"{host}:{port}"
+    lines = [
+        f"{method} {path} HTTP/1.1",
+        f"Host: {host_hdr}",
+        "User-Agent: myclient/0.1",
+        "Accept: */*",
+        "Connection: close",  # ensures server closes after response
+        "",  # end of headers
+        "",
+    ]
+    return ("\r\n".join(lines)).encode("iso-8859-1")
+
+req_bytes = build_request("GET", host, port, path)
+sock.sendall(req_bytes)
+
+
+CRLF = b"\r\n"
+marker = b"\r\n\r\n"
+
+def read_header_bytes(sock, marker=b"\r\n\r\n", max_limit=64*1024):
+    buf = bytearray()
+    while True:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise ValueError("connection closed before end of headers")
+        buf.extend(chunk)
+
+        i = buf.find(marker)
+        if i != -1:
+            header = bytes(buf[:i+len(marker)])
+            surplus = bytes(buf[i+len(marker):])
+            return header, surplus
+
+        if len(buf) > max_limit:
+            raise ValueError("HTTP header section too large")
+header_bytes, leftover = read_header_bytes(sock)
+print(header_bytes.decode("iso-8859-1"))
+
+
+ 
+
+
