@@ -90,8 +90,26 @@ def read_header_bytes(sock, marker=b"\r\n\r\n", max_limit=64*1024):
         if len(buf) > max_limit:
             raise ValueError("HTTP header section too large")
 header_bytes, leftover = read_header_bytes(sock)
-print(header_bytes.decode("iso-8859-1"))
 
+def parse_header(header_bytes):
+    lines = header_bytes.split(CRLF)
+    # parsed the first line
+    start = lines[0].decode("iso-8859-1").split()
+    http_version =start[0]
+    status = start[1]
+    reason = "".join(start[2:])
+    parsed_lines = {}
+    for line in lines[1:]:
+        if not line:
+            continue
+        key, description = line.decode("iso-8859-1").split(":", 1)
+        parsed_lines[key] = description
+    return http_version, status, reason, parsed_lines
+
+http_version, status, reason, header = parse_header(header_bytes)
+
+
+print(f"http_version:{http_version}\n status: {status} \n reason:{reason} \n header:{header}")
 
  
 
