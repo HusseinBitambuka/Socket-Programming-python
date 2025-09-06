@@ -89,7 +89,18 @@ class Mini_curl:
         return http_version, status, reason, headers
     
     def read_fixed(self, n, left_over, sock):
-        data = bytearray(left_over)
+        data = bytearray(left_over[:n])
+        left_over = left_over[n:]
+        need = n - len(data)
+        while need > 0:
+           buff = sock.rcv(min(need, 64*1024))
+           if not buff:
+               raise ValueError("the request aborted before finishing all the needed data")
+           data.extend(buff)
+           need -= len(buff)
+        return data, left_over
+    def read_chuncked(self, left_over, sock):
+        
 
 
 
