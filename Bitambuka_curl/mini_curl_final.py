@@ -40,6 +40,7 @@ class Mini_curl:
                 continue
 
         raise last_err or OSError("fail to connect to socket")
+    
     def build_GET_request(self):
         default_port = 443 if self.scheme == "https" else 80
         host_hdr = self.host if self.port == default_port else f"{self.host}:{self.port}"
@@ -53,6 +54,7 @@ class Mini_curl:
             "",
         ]
         return ("\r\n".join(lines)).encode("iso-8859-1")
+    
     def read_header_bytes(self, sock, max_limit=64*1024):
         buf = bytearray()
         while True:
@@ -88,19 +90,33 @@ class Mini_curl:
             headers[key] = f"{headers[key]}, {val}" if key in headers else val
         return http_version, status, reason, headers
     
-    def read_fixed(self, n, left_over, sock):
+    def read_fixed(self,sock, n, left_over=b""):
         data = bytearray(left_over[:n])
         left_over = left_over[n:]
         need = n - len(data)
         while need > 0:
-           buff = sock.rcv(min(need, 64*1024))
+           buff = sock.recv(min(need, 4*1024))
            if not buff:
-               raise ValueError("the request aborted before finishing all the needed data")
+               raise ValueError("connection closed before full body was received")
            data.extend(buff)
            need -= len(buff)
-        return data, left_over
+        return bytes(data), left_over
+    
     def read_chuncked(self, left_over, sock):
-        
+        buff = bytearray(left_over)
+        data = bytearray()
+
+        def read_until_marker(marker):
+            while True:
+                idx = buff.find(marker)
+                if idx != -1:
+                    return idx
+                more = sock.recv(4*1024)
+                if not more:
+                    raise ValueError("truncated chunked body (waiting for marker)")
+            buff.extend(more)
+
+
 
 
 
