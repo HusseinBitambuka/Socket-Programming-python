@@ -102,7 +102,7 @@ class Mini_curl:
            need -= len(buff)
         return bytes(data), left_over
     
-    def read_chuncked(self, left_over, sock):
+    def read_chuncked(self, left_over, sock, max_total=128*1024*1024,):
         buff = bytearray(left_over)
         data = bytearray()
 
@@ -114,7 +114,35 @@ class Mini_curl:
                 more = sock.recv(4*1024)
                 if not more:
                     raise ValueError("truncated chunked body (waiting for marker)")
-            buff.extend(more)
+                buff += more
+        
+        while True:
+            i = read_until_marker(self.CRLF)
+            line = buff[:i]
+            size_token = line.split(b";")[0].strip() # ignore any elements after the size if present
+
+            try:
+                size = int(size_token, 16)
+            except:
+                raise  ValueError(f"bad chunk size: {line!r}")
+            if size == 0:
+                # skip the last two end line marker
+                view = bytes(buff[i+2:]) # skip the last end line characters
+                while view.find(self.marker) == -1:
+                    more = sock.recv(4*1024)
+                    if not more:
+                        raise ValueError("truncated while reading the final chunck terminator")
+                    buff += more
+                    view = bytes(buff[i+2:])
+                end_index = view.find(self.marker)
+                left_over = view[end_index + 4]
+                return bytes(data), bytes(left_over)
+            
+            chunck, buff = self.read_fixed(sock, size, buff[i+2:]) # remember to ignore the first line and the CRF
+            data.extend(chunck)
+            if len(data)> max_total:
+                raise ValueError(f"The body obect is too large{len(data)}")
+
 
 
 
