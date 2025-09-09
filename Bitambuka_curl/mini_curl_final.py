@@ -101,8 +101,8 @@ class Mini_curl:
            data.extend(buff)
            need -= len(buff)
         return bytes(data), left_over
-    
-    def read_chuncked(self, left_over, sock, max_total=128*1024*1024,):
+        
+    def read_chunked(self, left_over, sock, max_total=128*1024*1024):
         buff = bytearray(left_over)
         data = bytearray()
 
@@ -113,38 +113,133 @@ class Mini_curl:
                     return idx
                 more = sock.recv(4*1024)
                 if not more:
-                    raise ValueError("truncated chunked body (waiting for marker)")
-                buff += more
-        
+                    raise ValueError("truncated body (waiting for marker)")
+                buff.extend(more)
+
         while True:
             i = read_until_marker(self.CRLF)
             line = buff[:i]
-            size_token = line.split(b";")[0].strip() # ignore any elements after the size if present
-
+            size_token = line.split(b";", 1)[0].strip()
             try:
                 size = int(size_token, 16)
-            except:
-                raise  ValueError(f"bad chunk size: {line!r}")
+            except ValueError:
+                raise ValueError(f"bad chunk size: {line!r}")
+
             if size == 0:
-                # skip the last two end line marker
-                view = bytes(buff[i+2:]) # skip the last end line characters
-                while view.find(self.marker) == -1:
+                # bytes after the "0\r\n" line
+                view = bytes(buff[i+2:])
+
+                # 1) Fast path: no trailers -> the very next two bytes are CRLF
+                while len(view) < 2:
                     more = sock.recv(4*1024)
                     if not more:
-                        raise ValueError("truncated while reading the final chunck terminator")
-                    buff += more
+                        raise ValueError("truncated while reading final chunk terminator (no trailers)")
+                    buff.extend(more)
                     view = bytes(buff[i+2:])
-                end_index = view.find(self.marker)
-                left_over = view[end_index + 4]
-                return bytes(data), bytes(left_over)
-            
-            chunck, buff = self.read_fixed(sock, size, buff[i+2:]) # remember to ignore the first line and the CRF
-            data.extend(chunck)
-            if len(data)> max_total:
-                raise ValueError(f"The body obect is too large{len(data)}")
+
+                if view.startswith(self.CRLF):
+                    # consume that single CRLF and we're done
+                    left_over = view[2:]
+                    return bytes(data), bytes(left_over)
+
+                # 2) Slow path: there ARE trailers -> read until CRLFCRLF
+                while True:
+                    j = view.find(self.marker)  # \r\n\r\n
+                    if j != -1:
+                        left_over = view[j + 4:]
+                        return bytes(data), bytes(left_over)
+                    more = sock.recv(4*1024)
+                    if not more:
+                        raise ValueError("truncated while reading trailers after last chunk")
+                    buff.extend(more)
+                    view = bytes(buff[i+2:])
+
+
+            chunk_bytes, after = self.read_fixed(sock, size, bytes(buff[i+2:]))
+            data.extend(chunk_bytes)
+            if len(data) > max_total:
+                raise ValueError(f"the body object is too large: {len(data)} bytes")
+
+            if len(after) < 2:
+                need = 2 - len(after)
+                extra, _ = self.read_fixed(sock, need, b"")
+                after = after + extra
+            if after[:2] != self.CRLF:
+                raise ValueError("missing CRLF after chunk data")
+
+            buff = bytearray(after[2:])
 
 
 
+def process_request(url, retries=10):
+    if retries <= 0:
+        return f"Redirect limit reached for {url}"
+
+    curl = Mini_curl(url)
+    sock = None
+    try:
+        sock = curl.establish_connection()
+        req_bytes = curl.build_GET_request()
+        sock.sendall(req_bytes)
+
+        header_bytes, left_over = curl.read_header_bytes(sock)
+        http_version, status, reason, headers = curl.parse_header(header_bytes)
+
+        # --- redirects (basic) ---
+        if status in (301, 302, 303, 307, 308):
+            location = headers.get("location")
+            if not location:
+                raise ValueError(f"{status} without Location")
+            new_url = urllib.parse.urljoin(url, location)
+            print(f"redirect {status} → {new_url}")
+            return process_request(new_url, retries - 1)
+
+        # --- decide if a body is expected ---
+        # (for GET) there is NO body for 1xx, 204, 304
+        has_body = not (100 <= status < 200 or status in (204, 304))
+
+        body = b""
+        if has_body:
+            te = headers.get("transfer-encoding", "").lower()
+            cl = headers.get("content-length")
+
+            if "chunked" in te:
+                body, left_over = curl.read_chunked(left_over, sock)
+            elif te:
+                raise ValueError(f"unsupported transfer-encoding: {te}")
+            elif cl is not None:
+                try:
+                    n = int(cl)
+                except Exception:
+                    raise ValueError(f"Content-Length not an int: {cl!r}")
+                body, left_over = curl.read_fixed(sock, n, left_over)
+            else:
+                # read-until-close
+                chunks = [left_over]
+                while True:
+                    c = sock.recv(65536)
+                    if not c: break
+                    chunks.append(c)
+                body = b"".join(chunks)
+
+        # --- pretty print (optional) ---
+        head_str = f"{http_version} {status} {reason}\n" + \
+                   "\n".join(f"{k.capitalize()}: {v}" for k, v in headers.items())
+        try:
+            text_preview = body.decode("utf-8")
+        except UnicodeDecodeError:
+            text_preview = body.decode("iso-8859-1", errors="replace")
+
+        return f"{head_str}\n\n{text_preview}"
+
+    except Exception as e:
+        raise
+    finally:
+        try:
+            if sock is not None:
+                sock.close()
+        except Exception:
+            pass
 
 
 
@@ -159,21 +254,16 @@ def main():
 
     name_prog =  args[0]
     url = args[1]
+    response = process_request(url)
+    print(response)
 
-    curl = Mini_curl(url)
-    try:
-            sock = curl.establish_connection()
-            req_bytes = curl.build_GET_request()
-            sock.sendall(req_bytes)
-            header_bytes, left_over = curl.read_header_bytes(sock)
-            http_version, status, reason, headers = curl.parse_header(header_bytes)
-
-            print(f"http_version:{http_version}\n status: {status} \n reason:{reason} \n header:{headers}")
+   
 
 
 
-    except Exception as e:
-        print(e)
+
+
+
 
 if __name__ == "__main__":
     main()
